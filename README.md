@@ -90,3 +90,15 @@ Cada sección tiene antetítulo, título, intro, ancla, fondo (light/dark/brand/
       "Contact us" del nav y de /for-edtechs con `href="#"`, selector EN apuntando a `/old-home`.
 - [ ] Completar el mapa de redirecciones 301 con todas las URLs antiguas (campo `legacyUrl` de cada documento).
 # Doctums-backend
+
+## Estructura del Studio (igual al CMS de Webflow)
+
+El panel izquierdo empieza con **CMS Collections**, con las mismas colecciones, nombres y orden que el CMS de Webflow, y el número de ítems de cada una en vivo:
+
+Practice Area Categories · Practice Areas · Case Study Highlights · Case Studies · Team Members · For institutions - Advisory Services · For institutions - Solutions · For institutions - Ellucian Implementation Services · Blog Categories · Blogs · Partners
+
+- Las colecciones que comparten tipo en Sanity se separan así: **Team Members** = `person` con `isTeamMember`; **Advisory Services / Ellucian Implementation Services / Solutions** = ítems con el `webflow.collectionId` de esa colección; **Partners** = el resto de `partner`.
+- Las colecciones traducibles (Practice Area Categories, Practice Areas, Advisory Services, Ellucian Implementation Services, Blog Categories, Blogs) se abren en **English (US) / Español (LATAM) / Todos**, cada una con su conteo. Team Members, Case Studies, Case Study Highlights, Solutions y Partners no tienen idioma y se muestran directo.
+- El botón **+** de cada colección usa una plantilla que deja el ítem nuevo dentro de esa colección (`sanity.config.ts → schema.templates`).
+- Debajo están **Sitio** (páginas, todos los servicios, FAQs, oficinas, personas) y **Configuración** (ajustes globales por idioma, redirecciones).
+- La definición está en `structure/index.ts` (`CMS_COLLECTIONS`).
