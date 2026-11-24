@@ -9,6 +9,8 @@ export const person = defineType({
   icon: UserIcon,
   fields: [
     defineField({name: 'name', title: 'Nombre', type: 'string', validation: (r) => r.required()}),
+    defineField({name: 'firstName', title: 'Member Name', type: 'string'}),
+    defineField({name: 'lastName', title: 'Member Last Name', type: 'string'}),
     defineField({name: 'slug', title: 'Slug', type: 'slug', options: {source: 'name'}}),
     defineField({name: 'role', title: 'Cargo (EN)', type: 'string'}),
     defineField({name: 'roleEs', title: 'Cargo (ES)', type: 'string'}),

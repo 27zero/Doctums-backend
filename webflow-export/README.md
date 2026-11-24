@@ -1,18 +1,18 @@
 # Exportaciones CSV de Webflow
 
-Guarda aquí un CSV por colección del CMS de Webflow (Designer → CMS → colección → **Export**).
-Deja el nombre que genera Webflow, por ejemplo `Doctums - Blog Posts - 64f….csv`.
+CSV exportados del CMS de Webflow (Designer → CMS → colección → **Export**), fuente de `npm run webflow:build`.
 
-Colecciones detectadas en doctums.com (sitemap, nov-2026):
-
-| Colección Webflow | URL | Ítems | Tipo en Sanity |
+| CSV de Webflow | Ítems | Tipo en Sanity | URL antigua |
 |---|---|---|---|
-| Blog Posts | /blog/* | 91 | `post` |
-| Blog Categories | /blog-category/* | 7 | `blogCategory` |
-| Authors / Team | (sin página) | — | `person` |
-| Practice Areas | /practice-area/* | 14 | `practiceArea` |
-| Practice Area Categories | /practice-area-category/* | 3 | `practiceAreaCategory` |
-| Case Studies | /case-studies/* | 7 | `caseStudy` |
-| Services | /services/* | 3 | `servicePage` |
+| Blogs | 91 | `post` (+ `person` para "Author Name") | /blog/* |
+| Blog Categories | 7 | `blogCategory` | /blog-category/* |
+| Team Members | 8 | `person` | /team |
+| Practice Areas | 14 | `practiceArea` | /practice-area/* |
+| Practice Area Categories | 3 | `practiceAreaCategory` | /practice-area-category/* |
+| For institutions – Advisory Services | 7 | `servicePage` (advisory / governance) | /advisory-services/* |
+| For institutions – Ellucian Implementation Services | 5 | `servicePage` (platform) | /ellucian-implementation-services/* |
+| For institutions – Solutions | 2 | `partner` | /solutions/* |
+| Case Study Highlights | 10 | `caseStudyHighlight` | — |
+| **Case Studies** | — | `caseStudy` | /case-studies/* — **falta exportar** |
 
-Luego: `npm run webflow:build` y `npm run webflow:import`.
+Para actualizar: reemplaza el CSV y vuelve a correr `npm run webflow:build && npm run webflow:import`.

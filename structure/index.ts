@@ -104,6 +104,7 @@ export const structure: StructureResolver = (S) =>
       S.divider(),
       S.documentTypeListItem('partner').title('Plataformas y partners').icon(StarIcon),
       S.documentTypeListItem('caseStudy').title('Casos de clientes').icon(CaseIcon),
+      S.documentTypeListItem('caseStudyHighlight').title('Highlights de casos').icon(CaseIcon),
       S.documentTypeListItem('office').title('Oficinas').icon(PinIcon),
       byLanguage(S, 'faq', 'FAQs', HelpCircleIcon),
       S.divider(),

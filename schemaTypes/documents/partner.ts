@@ -20,9 +20,15 @@ export const partner = defineType({
     defineField({name: 'website', title: 'Sitio web', type: 'url', group: 'content'}),
     defineField({name: 'hasLandingPage', title: 'Tiene página propia', type: 'boolean', initialValue: false, group: 'content'}),
     defineField({name: 'sections', title: 'Secciones de su página', type: 'array', of: pageBuilderMembers, hidden: ({document}) => !document?.hasLandingPage, group: 'content'}),
+    defineField({name: 'template', title: 'Plantilla (Webflow)', type: 'string', options: {list: ['Template 1', 'Template 2']}, group: 'content'}),
+    defineField({name: 'bannerImage', title: 'Banner Image', type: 'imageWithAlt', group: 'content'}),
+    defineField({name: 'serviceItems', title: 'Servicios / features', type: 'array', of: [{type: 'serviceItem'}], validation: (r) => r.max(8), group: 'content'}),
+    defineField({name: 'ctaText', title: 'CTA Text', type: 'string', group: 'content'}),
+    defineField({name: 'ctaLink', title: 'CTA Link', type: 'string', group: 'content'}),
     defineField({name: 'orderRank', title: 'Orden', type: 'number', group: 'content'}),
     defineField({name: 'seo', title: 'SEO', type: 'seo', group: 'seo'}),
-    legacyUrlField,
+    legacyUrlField,    defineField({name: 'webflow', title: 'Webflow (migración)', type: 'webflowMeta', hidden: ({value}) => !value}),
+
   ],
   preview: {select: {title: 'name', subtitle: 'kind', media: 'logo'}},
 })

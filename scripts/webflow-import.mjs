@@ -1,17 +1,18 @@
 #!/usr/bin/env node
 /**
- * Migración Webflow CMS → Sanity
+ * Migración Webflow CMS → Sanity (doctums.com)
  *
- * 1. En Webflow Designer: CMS → (cada colección) → ⋯ → "Export" → descarga el CSV.
- * 2. Guarda los CSV en ./webflow-export/ (el nombre del archivo puede quedar como lo genera Webflow,
- *    ej. "Doctums - Blog Posts - 6650….csv").
- * 3. node scripts/webflow-import.mjs            → genera seed/webflow-import.ndjson + reporte
- * 4. npm run import:webflow                     → sube a Sanity (descarga las imágenes de Webflow)
+ * 1. Webflow Designer → CMS → cada colección → Export → guarda los CSV en ./webflow-export/
+ * 2. npm run webflow:build    → seed/webflow-import.ndjson + seed/webflow-import-report.md
+ * 3. npm run webflow:import   → sube a Sanity (descarga y sube las imágenes del CDN de Webflow)
  *
- * IDs deterministas (wf-<ItemID>): se puede re-ejecutar cuantas veces se quiera sin duplicar.
+ * - IDs deterministas: reutiliza los _id del seed base (seed/doctums-seed.ndjson) cuando el slug,
+ *   la URL antigua o el nombre coinciden; si no, usa un id legible por tipo. Re-ejecutable sin duplicar.
+ * - Ítems en Draft en Webflow → borradores en Sanity (drafts.<id>).
+ * - Ítems archivados → no se importan.
  */
 import {readFileSync, readdirSync, writeFileSync, mkdirSync, existsSync} from 'node:fs'
-import {join, basename} from 'node:path'
+import {join} from 'node:path'
 import {parse} from 'csv-parse/sync'
 import {JSDOM} from 'jsdom'
 import {htmlToBlocks, randomKey} from '@portabletext/block-tools'
@@ -20,9 +21,10 @@ import {Schema} from '@sanity/schema'
 const IN_DIR = process.argv[2] || 'webflow-export'
 const OUT = 'seed/webflow-import.ndjson'
 const REPORT = 'seed/webflow-import-report.md'
+const key = () => randomKey(12)
 
 // ---------------------------------------------------------------------------
-// Portable Text (misma forma que schemaTypes/objects/blockContent.ts)
+// HTML → Portable Text (misma forma que schemaTypes/objects/blockContent.ts)
 // ---------------------------------------------------------------------------
 const ptSchema = Schema.compile({
   name: 'migration',
@@ -50,358 +52,460 @@ const ptSchema = Schema.compile({
 })
 const blockContentType = ptSchema.get('holder').fields.find((f) => f.name === 'body').type
 
-const imgAsset = (url, alt) =>
-  url ? {_type: 'imageWithAlt', _sanityAsset: `image@${url.trim()}`, ...(alt ? {alt} : {})} : undefined
+// uploads-ssl.webflow.com es el dominio antiguo del CDN de Webflow (mismas rutas en cdn.prod.website-files.com)
+const fixUrl = (u) => (u || '').trim().replace('https://uploads-ssl.webflow.com/', 'https://cdn.prod.website-files.com/')
+const image = (url, alt) => (url && url.trim() ? {_type: 'imageWithAlt', _sanityAsset: `image@${fixUrl(url)}`, ...(alt ? {alt: alt.trim()} : {})} : undefined)
+const plainImage = (url) => (url && url.trim() ? {_type: 'image', _sanityAsset: `image@${fixUrl(url)}`} : undefined)
+const embedUrl = (src) => (src.startsWith('//') ? `https:${src}` : src)
 
 const rules = [
   {
-    // <figure><img/><figcaption/></figure> y <img> sueltos → imageWithAlt
     deserialize(el, next, block) {
       const tag = el.tagName?.toLowerCase()
       if (tag !== 'figure' && tag !== 'img') return undefined
       const iframe = tag === 'figure' && el.querySelector('iframe')
-      if (iframe) {
-        const src = iframe.getAttribute('src') || ''
-        return block({_type: 'embed', _key: randomKey(12), url: src.startsWith('//') ? `https:${src}` : src})
-      }
+      if (iframe) return block({_type: 'embed', _key: key(), url: embedUrl(iframe.getAttribute('src') || '')})
       const img = tag === 'img' ? el : el.querySelector('img')
       if (!img) return undefined
       const caption = tag === 'figure' ? el.querySelector('figcaption')?.textContent?.trim() : undefined
-      return block({...imgAsset(img.getAttribute('src'), img.getAttribute('alt') || undefined), _key: randomKey(12), ...(caption ? {caption} : {})})
+      return block({...image(img.getAttribute('src'), img.getAttribute('alt') || undefined), _key: key(), ...(caption ? {caption} : {})})
     },
   },
   {
     deserialize(el, next, block) {
       if (el.tagName?.toLowerCase() !== 'iframe') return undefined
-      const src = el.getAttribute('src') || ''
-      return block({_type: 'embed', _key: randomKey(12), url: src.startsWith('//') ? `https:${src}` : src})
+      return block({_type: 'embed', _key: key(), url: embedUrl(el.getAttribute('src') || '')})
     },
   },
   {
-    // h1 dentro del cuerpo → h2 (el h1 es el título del documento); h5/h6 → h4
+    // h1 dentro de rich text → h2 (el h1 es el título); h5/h6 → h4
     deserialize(el, next, block) {
-      const tag = el.tagName?.toLowerCase()
-      const map = {h1: 'h2', h5: 'h4', h6: 'h4'}
-      if (!map[tag]) return undefined
-      return block({_type: 'block', style: map[tag], markDefs: [], children: next(el.childNodes)})
+      const style = {h1: 'h2', h5: 'h4', h6: 'h4'}[el.tagName?.toLowerCase()]
+      if (!style) return undefined
+      return block({_type: 'block', style, markDefs: [], children: next(el.childNodes)})
     },
   },
 ]
 
+const clean = (html) => (html || '').replace(/‍/g, '').trim()
 const toPT = (html) => {
-  if (!html || !html.trim()) return undefined
-  const blocks = htmlToBlocks(html, blockContentType, {parseHtml: (h) => new JSDOM(h).window.document, rules})
-  // block-tools pone _type del miembro: renombrar 'image' → 'imageWithAlt' por si acaso
-  return blocks.map((b) => (b._type === 'image' ? {...b, _type: 'imageWithAlt'} : b))
+  const h = clean(html)
+  if (!h) return undefined
+  const src = /<[a-z][\s\S]*>/i.test(h) ? h : h.split(/\n{2,}/).map((p) => `<p>${p}</p>`).join('')
+  const blocks = htmlToBlocks(src, blockContentType, {parseHtml: (x) => new JSDOM(x).window.document, rules})
+  // quitar párrafos vacíos
+  const out = blocks.filter((b) => b._type !== 'block' || b.children?.some((c) => (c.text || '').trim()))
+  return out.length ? out : undefined
+}
+const toText = (html) => {
+  const h = clean(html)
+  return h ? new JSDOM(`<body>${h}</body>`).window.document.body.textContent.replace(/\s+/g, ' ').trim() || undefined : undefined
 }
 
-const htmlToText = (html) => (html ? new JSDOM(`<body>${html}</body>`).window.document.body.textContent.replace(/\s+/g, ' ').trim() : undefined)
-
 // ---------------------------------------------------------------------------
-// Utilidades CSV
+// CSV
 // ---------------------------------------------------------------------------
-const norm = (s) => s.toLowerCase().replace(/[^a-z0-9]/g, '')
-/** Devuelve el valor de la primera columna cuyo nombre normalizado coincida con alguno de los candidatos */
-const pick = (row, ...cands) => {
-  for (const c of cands) {
-    const k = Object.keys(row).find((h) => norm(h) === norm(c))
-    if (k && row[k] !== undefined && String(row[k]).trim() !== '') return String(row[k]).trim()
-  }
-  return undefined
+const v = (row, col) => {
+  const x = row[col]
+  return x === undefined || String(x).trim() === '' ? undefined : String(x).trim()
 }
-const usedCols = new Map() // colección → Set(columnas usadas)
-const use = (coll, row, ...cands) => {
-  const set = usedCols.get(coll) || new Set()
-  usedCols.set(coll, set)
-  for (const c of cands) {
-    const k = Object.keys(row).find((h) => norm(h) === norm(c))
-    if (k) set.add(k)
-  }
-  return pick(row, ...cands)
-}
-const bool = (v) => /^(true|yes|1)$/i.test(String(v || '').trim())
-const date = (v) => {
-  if (!v) return undefined
-  const d = new Date(v)
+const bool = (x) => String(x || '').trim().toLowerCase() === 'true'
+const date = (x) => {
+  if (!x) return undefined
+  const d = new Date(String(x).replace(/\s*\(.*\)\s*$/, ''))
   return isNaN(d) ? undefined : d.toISOString()
 }
-const list = (v) => (v ? v.split(';').map((s) => s.trim()).filter(Boolean) : [])
+const num = (x) => (x !== undefined && x !== '' && !isNaN(Number(x)) ? Number(x) : undefined)
 const slug = (s) => (s ? {_type: 'slug', current: s} : undefined)
-
-// ---------------------------------------------------------------------------
-// Detección de colecciones por nombre de archivo
-// ---------------------------------------------------------------------------
-const COLLECTIONS = [
-  {key: 'blogCategories', match: /blog.?categor|^categor/i, type: 'blogCategory'},
-  {key: 'practiceAreaCategories', match: /practice.?area.?categor/i, type: 'practiceAreaCategory'},
-  {key: 'practiceAreas', match: /practice.?area/i, type: 'practiceArea'},
-  {key: 'authors', match: /author|team|member|people|person|equipo/i, type: 'person'},
-  {key: 'caseStudies', match: /case.?stud|casos/i, type: 'caseStudy'},
-  {key: 'services', match: /service/i, type: 'servicePage'},
-  {key: 'posts', match: /blog|post|article|insight/i, type: 'post'},
-]
+const slugify = (s) =>
+  s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '')
 
 if (!existsSync(IN_DIR)) {
   console.error(`✖ No existe la carpeta ${IN_DIR}/ — exporta los CSV de Webflow y guárdalos ahí.`)
   process.exit(1)
 }
-const files = readdirSync(IN_DIR).filter((f) => f.toLowerCase().endsWith('.csv'))
+
+const COLLECTIONS = {
+  blogCategories: /blog categories/i,
+  posts: /- blogs -/i,
+  advisoryServices: /advisory services/i,
+  ellucianServices: /ellucian implementation services/i,
+  solutions: /- solutions -/i,
+  teamMembers: /team members/i,
+  caseStudyHighlights: /case study highlights/i,
+  caseStudies: /- case studies -/i,
+  practiceAreaCategories: /practice area categories/i,
+  practiceAreas: /practice areas -/i,
+}
 const data = {}
 const unknown = []
-for (const f of files) {
-  const name = basename(f, '.csv').replace(/^.*? - (.*?) - [0-9a-f]+$/i, '$1') // "Site - Blog Posts - 66ab…" → "Blog Posts"
-  const coll = COLLECTIONS.find((c) => c.match.test(name))
+for (const f of readdirSync(IN_DIR).filter((x) => x.toLowerCase().endsWith('.csv'))) {
+  const name = f.replace(/_/g, ' ')
+  const k = Object.keys(COLLECTIONS).find((c) => COLLECTIONS[c].test(name))
   const rows = parse(readFileSync(join(IN_DIR, f)), {columns: true, skip_empty_lines: true, bom: true, relax_quotes: true, relax_column_count: true})
-  if (!coll) {
-    unknown.push({file: f, rows: rows.length, columns: rows[0] ? Object.keys(rows[0]) : []})
-    continue
-  }
-  data[coll.key] = {file: f, rows, type: coll.type}
+  if (!k) unknown.push({file: f, rows: rows.length, columns: Object.keys(rows[0] || {})})
+  else data[k] = {file: f, rows: rows.filter((r) => !bool(r.Archived))}
 }
 
 // ---------------------------------------------------------------------------
-// Índices slug → _id (las referencias en el CSV de Webflow vienen como slugs)
+// IDs: reutilizar los del seed base
 // ---------------------------------------------------------------------------
-// Reutilizar los _id del seed base (seed/doctums-seed.ndjson) cuando el slug/nombre coincide,
-// así el contenido de Webflow reemplaza los placeholders y las páginas siguen referenciándolos.
 const seedIndex = new Map()
 if (existsSync('seed/doctums-seed.ndjson')) {
   for (const line of readFileSync('seed/doctums-seed.ndjson', 'utf8').split('\n').filter(Boolean)) {
     const d = JSON.parse(line)
-    if (d.slug?.current) seedIndex.set(`${d._type}:${d.slug.current}`, d._id)
-    if (d._type === 'person' && d.name) seedIndex.set(`person:name:${d.name.toLowerCase()}`, d._id)
-    if (d._type === 'caseStudy' && d.institution) seedIndex.set(`caseStudy:name:${d.institution.toLowerCase()}`, d._id)
+    if (d.slug?.current) seedIndex.set(`${d._type}:slug:${d.slug.current}`, d._id)
+    if (d.legacyUrl) seedIndex.set(`${d._type}:url:${d.legacyUrl}`, d._id)
+    if (d.name) seedIndex.set(`${d._type}:name:${d.name.toLowerCase()}`, d._id)
   }
 }
-const idOf = (row, type) =>
-  (type && (seedIndex.get(`${type}:${pick(row, 'Slug')}`) || seedIndex.get(`${type}:name:${(pick(row, 'Name') || '').toLowerCase()}`))) ||
-  `wf-${pick(row, 'Item ID', 'ItemID', '_id') || pick(row, 'Slug')}`
-const slugIndex = {}
-for (const [k, {rows, type}] of Object.entries(data)) {
-  slugIndex[k] = new Map(rows.map((r) => [pick(r, 'Slug'), idOf(r, type)]))
+const resolveId = (type, {slug: s, url, name}, fallback) =>
+  (s && seedIndex.get(`${type}:slug:${s}`)) ||
+  (url && seedIndex.get(`${type}:url:${url}`)) ||
+  (name && seedIndex.get(`${type}:name:${name.toLowerCase()}`)) ||
+  fallback
+
+// índice: colección → slug Webflow → {id, draft}
+const refIndex = {}
+const register = (coll, s, id, draft) => {
+  refIndex[coll] = refIndex[coll] || new Map()
+  refIndex[coll].set(s, {id, draft})
 }
 const missingRefs = []
-const refTo = (collKey, s, fromId) => {
+const ref = (coll, s, from) => {
   if (!s) return undefined
-  const id = slugIndex[collKey]?.get(s) || (collKey === 'authors' && seedIndex.get(`person:name:${s.toLowerCase()}`))
-  if (!id) {
-    missingRefs.push(`${fromId} → ${collKey}:${s}`)
+  const hit = refIndex[coll]?.get(s.trim())
+  if (!hit) {
+    missingRefs.push(`${from} → ${coll}: \`${s}\``)
     return undefined
   }
-  return {_type: 'reference', _ref: id}
+  // referencias a borradores: débiles (se fortalecen al publicar)
+  return {_type: 'reference', _ref: hit.id, ...(hit.draft ? {_weak: true, _strengthenOnPublish: {type: coll}} : {})}
 }
-const refsTo = (collKey, v, fromId) => list(v).map((s) => refTo(collKey, s, fromId)).filter(Boolean).map((r) => ({...r, _key: randomKey(12)}))
+const refs = (coll, list, from) =>
+  (list || '').split(';').map((s) => s.trim()).filter(Boolean).map((s) => ref(coll, s, from)).filter(Boolean).map((r) => ({...r, _key: key()}))
 
-const SYSTEM_COLS = ['Name', 'Slug', 'Collection ID', 'Locale ID', 'Item ID', 'Archived', 'Draft', 'Created On', 'Updated On', 'Published On']
-const meta = (coll, row) => {
-  const used = new Set([...(usedCols.get(coll) || []), ...SYSTEM_COLS])
-  const rest = Object.fromEntries(Object.entries(row).filter(([k, v]) => !used.has(k) && String(v).trim() !== ''))
-  return {
-    _type: 'webflowMeta',
-    itemId: pick(row, 'Item ID'),
-    collectionId: pick(row, 'Collection ID'),
-    collection: data[coll].file,
-    createdOn: pick(row, 'Created On'),
-    updatedOn: pick(row, 'Updated On'),
-    publishedOn: pick(row, 'Published On'),
-    draft: bool(pick(row, 'Draft')),
-    archived: bool(pick(row, 'Archived')),
-    ...(Object.keys(rest).length ? {raw: JSON.stringify(rest, null, 2)} : {}),
+const meta = (coll, row) => ({
+  _type: 'webflowMeta',
+  itemId: v(row, 'Item ID'),
+  collectionId: v(row, 'Collection ID'),
+  collection: data[coll].file,
+  createdOn: v(row, 'Created On'),
+  updatedOn: v(row, 'Updated On'),
+  publishedOn: v(row, 'Published On'),
+  draft: bool(row.Draft),
+  archived: bool(row.Archived),
+})
+const docs = new Map()
+const push = (coll, row, doc) => {
+  doc.webflow = meta(coll, row)
+  if (bool(row.Draft)) doc._id = `drafts.${doc._id}`
+  docs.set(doc._id, {...(docs.get(doc._id) || {}), ...doc})
+}
+const isSpanish = (s) => /¿|¡|\b(la|el|los|las|del|para|una|por|con|desaparecer)\b/i.test(s || '')
+
+// Pre-registro de IDs para poder referenciar en cualquier orden
+const plan = {
+  blogCategories: (r) => ['blogCategory', resolveId('blogCategory', {slug: r.Slug}, `blogcat-${r.Slug}`)],
+  practiceAreaCategories: (r) => ['practiceAreaCategory', resolveId('practiceAreaCategory', {slug: r.Slug}, `pacat-${r.Slug}`)],
+  practiceAreas: (r) => ['practiceArea', resolveId('practiceArea', {slug: r.Slug}, `pa-${r.Slug}`)],
+  teamMembers: (r) => {
+    const name = [v(r, 'Member Name'), v(r, 'Member Last Name')].filter(Boolean).join(' ')
+    return ['person', resolveId('person', {name}, `person-${slugify(name)}`)]
+  },
+  advisoryServices: (r) => [
+    'servicePage',
+    resolveId('servicePage', {url: r.Slug === 'cybersecurity-for-higher-education' ? `/${r.Slug}` : `/advisory-services/${r.Slug}`, slug: r.Slug}, `svc-${r.Slug}`),
+  ],
+  ellucianServices: (r) => ['servicePage', resolveId('servicePage', {url: `/ellucian-implementation-services/${r.Slug}`, slug: r.Slug}, `svc-${r.Slug}`)],
+  solutions: (r) => ['partner', resolveId('partner', {slug: r.Slug, url: `/solutions/${r.Slug}`}, `partner-${r.Slug}`)],
+  caseStudies: (r) => ['caseStudy', resolveId('caseStudy', {slug: r.Slug}, `case-${r.Slug}`)],
+  caseStudyHighlights: (r) => ['caseStudyHighlight', `highlight-${r.Slug}`],
+  posts: (r) => ['post', resolveId('post', {slug: r.Slug}, `post-${r.Slug}`)],
+}
+const ids = {}
+for (const [coll, {rows}] of Object.entries(data)) {
+  ids[coll] = new Map()
+  for (const r of rows) {
+    const [, id] = plan[coll](r)
+    ids[coll].set(r['Item ID'], id)
+    register(coll, r.Slug, bool(r.Draft) ? `drafts.${id}` : id, bool(r.Draft))
   }
 }
-const seo = (coll, row) => {
-  const metaTitle = use(coll, row, 'Meta Title', 'SEO Title', 'Title Tag')
-  const metaDescription = use(coll, row, 'Meta Description', 'SEO Description', 'Meta Desc')
-  const og = use(coll, row, 'Open Graph Image', 'OG Image', 'Social Image')
-  if (!metaTitle && !metaDescription && !og) return undefined
-  return {_type: 'seo', metaTitle, metaDescription, ogImage: og ? {_type: 'image', _sanityAsset: `image@${og}`} : undefined}
-}
-const lang = (coll, row, fallback = 'en') => {
-  const v = use(coll, row, 'Language', 'Idioma', 'Locale')
-  if (!v) return fallback
-  return /^es|span/i.test(v) ? 'es' : 'en'
-}
+const idFor = (coll, row) => ids[coll].get(row['Item ID'])
 
 // ---------------------------------------------------------------------------
-// Mapeos por colección
+// Mapeos (columnas reales de los CSV de Webflow de Doctums)
 // ---------------------------------------------------------------------------
-const docs = []
+const serviceItems = (row) => {
+  const out = []
+  for (let n = 1; n <= 8; n++) {
+    const title = v(row, `Service Title ${n}`)
+    const description = toPT(v(row, `Service Description ${n}`))
+    const img = image(v(row, `Service Image ${n}`), title)
+    if (title || description || img) out.push({_type: 'serviceItem', _key: key(), title, description, image: img})
+  }
+  return out.length ? out : undefined
+}
+
 const M = {
   blogCategories: (row) => ({
-    _id: idOf(row, 'blogCategory'),
+    _id: idFor('blogCategories', row),
     _type: 'blogCategory',
-    language: lang('blogCategories', row),
-    title: use('blogCategories', row, 'Name'),
-    slug: slug(use('blogCategories', row, 'Slug')),
-    description: htmlToText(use('blogCategories', row, 'Description', 'Short Description', 'Summary')),
-    orderRank: Number(use('blogCategories', row, 'Order', 'Sort Order')) || undefined,
-    legacyUrl: `/blog-category/${pick(row, 'Slug')}`,
+    language: 'en',
+    title: v(row, 'Name (Title)'),
+    slug: slug(row.Slug),
+    image: image(v(row, 'Category Image')),
+    legacyUrl: `/blog-category/${row.Slug}`,
   }),
 
   practiceAreaCategories: (row) => ({
-    _id: idOf(row, 'practiceAreaCategory'),
+    _id: idFor('practiceAreaCategories', row),
     _type: 'practiceAreaCategory',
-    language: lang('practiceAreaCategories', row),
-    title: use('practiceAreaCategories', row, 'Name'),
-    slug: slug(use('practiceAreaCategories', row, 'Slug')),
-    description: htmlToText(use('practiceAreaCategories', row, 'Description', 'Short Description', 'Summary')),
-    icon: (() => {
-      const u = use('practiceAreaCategories', row, 'Icon', 'Image')
-      return u ? {_type: 'image', _sanityAsset: `image@${u}`} : undefined
-    })(),
-    orderRank: Number(use('practiceAreaCategories', row, 'Order', 'Sort Order')) || undefined,
+    language: 'en',
+    title: v(row, 'Name (Title)'),
+    slug: slug(row.Slug),
+    cardImage: image(v(row, 'Card Image'), v(row, 'Name (Title)')),
+    icon: plainImage(v(row, 'Icon')),
+    practiceAreas: refs('practiceAreas', v(row, 'Practices Areas'), row.Slug),
+    description: v(row, 'Advisory Services - Description'),
+    legacyUrl: `/practice-area-category/${row.Slug}`,
   }),
 
   practiceAreas: (row) => {
-    const _id = idOf(row, 'practiceArea')
-    const c = 'practiceAreas'
-    const body = toPT(use(c, row, 'Body', 'Content', 'Description', 'Rich Text', 'Post Body'))
+    const highlights = []
+    for (let n = 1; n <= 6; n++) {
+      const text = toPT(v(row, `Highlight ${n}`))
+      const img = image(v(row, n === 6 ? 'Highlight image 6' : `Highlight Image ${n}`) || v(row, `Highlight Image ${n}`))
+      if (text || img) highlights.push({_type: 'highlight', _key: key(), text, image: img})
+    }
     return {
-      _id,
+      _id: idFor('practiceAreas', row),
       _type: 'practiceArea',
-      language: lang(c, row),
-      title: use(c, row, 'Name'),
-      slug: slug(use(c, row, 'Slug')),
-      category: refTo('practiceAreaCategories', use(c, row, 'Category', 'Practice Area Category', 'Practice Area Categories'), _id),
-      summary: htmlToText(use(c, row, 'Summary', 'Short Description', 'Excerpt')),
-      sections: body ? [{_type: 'richTextSection', _key: randomKey(12), intro: body, theme: 'light'}] : undefined,
-      seo: seo(c, row),
-      legacyUrl: `/practice-area/${pick(row, 'Slug')}`,
+      language: 'en',
+      title: v(row, 'Name (Title)'),
+      slug: slug(row.Slug),
+      category: ref('practiceAreaCategories', v(row, 'Category'), row.Slug),
+      image: image(v(row, 'Practice Area Image'), v(row, 'Name (Title)')),
+      tagline: v(row, 'Tagline'),
+      shortDescription: v(row, 'Short Description'),
+      summary: v(row, 'Short Description'),
+      highlights: highlights.length ? highlights : undefined,
+      orderRank: num(v(row, 'Custom Order')),
+      legacyUrl: `/practice-area/${row.Slug}`,
     }
   },
 
-  authors: (row) => {
-    const c = 'authors'
-    const photo = use(c, row, 'Photo', 'Image', 'Avatar', 'Picture', 'Profile Picture', 'Headshot')
+  teamMembers: (row, i) => {
+    const firstName = v(row, 'Member Name')
+    const lastName = v(row, 'Member Last Name')
+    const name = [firstName, lastName].filter(Boolean).join(' ')
     return {
-      _id: idOf(row, 'person'),
+      _id: idFor('teamMembers', row),
       _type: 'person',
-      name: use(c, row, 'Name'),
-      slug: slug(use(c, row, 'Slug')),
-      role: use(c, row, 'Title', 'Job Title', 'Position', 'Role', 'Cargo'),
-      photo: imgAsset(photo, pick(row, 'Name')),
-      bio: toPT(use(c, row, 'Bio', 'Biography', 'Description', 'About')),
-      linkedin: use(c, row, 'LinkedIn', 'Linkedin URL', 'LinkedIn Link', 'Linkedin Profile'),
-      isTeamMember: bool(use(c, row, 'Team Member', 'Show in Team', 'Is Team Member')) || /team|member|equipo/i.test(data[c].file),
-      orderRank: Number(use(c, row, 'Order', 'Sort Order')) || undefined,
+      name,
+      firstName,
+      lastName,
+      slug: slug(slugify(name)),
+      role: v(row, 'Member Charge'),
+      bio: toPT(v(row, 'Member Bio')),
+      photo: image(v(row, 'Member Headshot'), name),
+      linkedin: v(row, 'LinkedIn Profile'),
+      isTeamMember: true,
+      orderRank: i + 1,
     }
   },
 
-  caseStudies: (row) => {
-    const c = 'caseStudies'
-    return {
-      _id: idOf(row, 'caseStudy'),
-      _type: 'caseStudy',
-      institution: use(c, row, 'Name', 'Institution'),
-      slug: slug(use(c, row, 'Slug')),
-      country: use(c, row, 'Country', 'País', 'Location'),
-      logo: imgAsset(use(c, row, 'Logo', 'Institution Logo'), pick(row, 'Name')),
-      mainImage: imgAsset(use(c, row, 'Main Image', 'Image', 'Hero Image', 'Thumbnail', 'Cover')),
-      summary: htmlToText(use(c, row, 'Summary', 'Short Description', 'Excerpt', 'Description')),
-      body: toPT(use(c, row, 'Body', 'Content', 'Rich Text', 'Case Study', 'Story')),
-      featured: bool(use(c, row, 'Featured')),
-      seo: seo(c, row),
-      legacyUrl: `/case-studies/${pick(row, 'Slug')}`,
-    }
-  },
+  advisoryServices: (row, i) => ({
+    _id: idFor('advisoryServices', row),
+    _type: 'servicePage',
+    language: 'en',
+    title: v(row, 'Title'),
+    slug: slug(row.Slug),
+    serviceGroup: /governance/i.test(row.Slug) ? 'governance' : 'advisory',
+    parent: {_type: 'reference', _ref: 'svc-advisory'},
+    template: v(row, 'Template'),
+    bannerImage: image(v(row, 'Banner Image'), v(row, 'Title')),
+    bannerDescription: toPT(v(row, 'Description')),
+    summary: toText(v(row, 'Description')),
+    serviceItems: serviceItems(row),
+    ctaText: v(row, 'CTA Text'),
+    orderRank: 10 + i,
+    legacyUrl: row.Slug === 'cybersecurity-for-higher-education' ? `/${row.Slug}` : `/advisory-services/${row.Slug}`,
+  }),
 
-  services: (row) => {
-    const c = 'services'
-    const body = toPT(use(c, row, 'Body', 'Content', 'Description', 'Rich Text'))
+  ellucianServices: (row, i) => ({
+    _id: idFor('ellucianServices', row),
+    _type: 'servicePage',
+    language: 'en',
+    title: v(row, 'Title'),
+    slug: slug(row.Slug),
+    serviceGroup: 'platform',
+    parent: {_type: 'reference', _ref: 'svc-platform'},
+    template: v(row, 'Template'),
+    bannerImage: image(v(row, 'Banner Image'), v(row, 'Title')),
+    bannerDescription: toPT(v(row, 'Banner Description')),
+    summary: toText(v(row, 'Banner Description')),
+    serviceItems: serviceItems(row),
+    ctaText: v(row, 'CTA Text'),
+    orderRank: 40 + i,
+    legacyUrl: `/ellucian-implementation-services/${row.Slug}`,
+  }),
+
+  solutions: (row, i) => ({
+    _id: idFor('solutions', row),
+    _type: 'partner',
+    name: v(row, 'Title'),
+    slug: slug(row.Slug),
+    kind: 'strategic',
+    hasLandingPage: true,
+    template: v(row, 'Template'),
+    bannerImage: image(v(row, 'Banner Image'), v(row, 'Title')),
+    description: toText(v(row, 'Description')),
+    serviceItems: serviceItems(row),
+    ctaText: v(row, 'CTA Text'),
+    ctaLink: v(row, 'CTA Link'),
+    orderRank: num(i + 5),
+    legacyUrl: `/solutions/${row.Slug}`,
+  }),
+
+  caseStudies: (row) => ({
+    _id: idFor('caseStudies', row),
+    _type: 'caseStudy',
+    institution: v(row, 'Name') || v(row, 'Name (Title)') || v(row, 'Title'),
+    slug: slug(row.Slug),
+    legacyUrl: `/case-studies/${row.Slug}`,
+    // TODO: mapear columnas propias cuando esté el CSV "Case Studies" (se listan en el reporte)
+  }),
+
+  caseStudyHighlights: (row) => {
+    const caseSlug = v(row, 'Case Study')
+    if (caseSlug && !refIndex.caseStudies?.has(caseSlug)) {
+      // Colección "Case Studies" no exportada: crear caso base para no perder la relación
+      const id = resolveId('caseStudy', {slug: caseSlug}, `case-${caseSlug}`)
+      register('caseStudies', caseSlug, id, false)
+      const pretty = caseSlug.split('---').map((p) => p.split('-').map((w) => (w.length <= 3 && /^(of|the|and)$/.test(w) ? w : w[0].toUpperCase() + w.slice(1))).join(' ')).join(' – ')
+      docs.set(id, {_id: id, _type: 'caseStudy', institution: pretty.replace(/^Ollu\b/, 'OLLU').replace(/^Uvm\b/, 'UVM').replace(/^Duoc\b/, 'DUOC'), slug: slug(caseSlug), legacyUrl: `/case-studies/${caseSlug}`})
+      createdCaseStubs.add(caseSlug)
+    }
     return {
-      _id: idOf(row, 'servicePage'),
-      _type: 'servicePage',
-      language: lang(c, row),
-      title: use(c, row, 'Name'),
-      slug: slug(use(c, row, 'Slug')),
-      summary: htmlToText(use(c, row, 'Summary', 'Short Description', 'Excerpt')),
-      icon: (() => {
-        const u = use(c, row, 'Icon')
-        return u ? {_type: 'image', _sanityAsset: `image@${u}`} : undefined
-      })(),
-      cardImage: imgAsset(use(c, row, 'Image', 'Main Image', 'Thumbnail')),
-      sections: body ? [{_type: 'richTextSection', _key: randomKey(12), intro: body, theme: 'light'}] : undefined,
-      seo: seo(c, row),
-      legacyUrl: `/services/${pick(row, 'Slug')}`,
+      _id: idFor('caseStudyHighlights', row),
+      _type: 'caseStudyHighlight',
+      name: v(row, 'Highlight ID'),
+      slug: slug(row.Slug),
+      title: v(row, 'Highlight Title'),
+      image: image(v(row, 'Highlight Image'), v(row, 'Highlight Title')),
+      caseStudy: ref('caseStudies', caseSlug, row.Slug),
+      practiceArea: refIndex.practiceAreas?.get(practiceAreaGuess(row.Slug))
+        ? {_type: 'reference', _ref: refIndex.practiceAreas.get(practiceAreaGuess(row.Slug)).id, _weak: true}
+        : undefined,
+      context: v(row, 'Context'),
+      challenge: v(row, 'Challenge'),
+      painPoints: v(row, 'Pain Points'),
+      solution: v(row, 'Solution'),
+      results: v(row, 'Results'),
     }
   },
 
   posts: (row) => {
-    const c = 'posts'
-    const _id = idOf(row, 'post')
-    const authorField = use(c, row, 'Author', 'Authors', 'Autor', 'Written By')
-    const authors = data.authors ? refsTo('authors', authorField, _id) : []
+    const title = v(row, 'Name')
+    const authorName = v(row, 'Author Name')
+    const author = authorFor(authorName, row)
     return {
-      _id,
+      _id: idFor('posts', row),
       _type: 'post',
-      language: lang(c, row, /^[¿¡]|ción|ó|á|é/.test(pick(row, 'Name') || '') ? 'es' : 'en'),
-      title: use(c, row, 'Name', 'Title'),
-      slug: slug(use(c, row, 'Slug')),
-      publishedAt: date(use(c, row, 'Date', 'Publish Date', 'Post Date', 'Published Date', 'Fecha')) || date(pick(row, 'Published On')) || date(pick(row, 'Created On')),
-      authors: authors.length ? authors : undefined,
-      authorName: !authors.length ? authorField : undefined, // texto plano si "Author" no es referencia
-      categories: data.blogCategories ? refsTo('blogCategories', use(c, row, 'Category', 'Categories', 'Blog Category', 'Blog Categories'), _id) : undefined,
-      featured: bool(use(c, row, 'Featured', 'Featured?', 'Destacado')),
-      excerpt: htmlToText(use(c, row, 'Excerpt', 'Post Summary', 'Summary', 'Short Description', 'Intro')),
-      mainImage: imgAsset(use(c, row, 'Main Image', 'Thumbnail Image', 'Thumbnail', 'Image', 'Cover Image', 'Featured Image'), pick(row, 'Name')),
-      body: toPT(use(c, row, 'Post Body', 'Body', 'Content', 'Rich Text', 'Article')),
-      seo: seo(c, row),
-      legacyUrl: `/blog/${pick(row, 'Slug')}`,
+      language: isSpanish(title) ? 'es' : 'en',
+      title,
+      slug: slug(row.Slug),
+      publishedAt: date(v(row, 'Published On')) || date(v(row, 'Created On')),
+      authors: [{_type: 'reference', _ref: author, _key: key()}],
+      featured: bool(row['Featured Article']),
+      mainArticle: bool(row['Main Article']),
+      outstanding: bool(row.Outstanding),
+      order: num(v(row, 'Order')),
+      timeToRead: v(row, 'Time to Read'),
+      forefrontType: v(row, 'Forefront Type'),
+      excerpt: v(row, 'Short Description'),
+      mainImage: image(v(row, 'Forefront Image'), title),
+      video: v(row, 'Video'),
+      body: toPT(v(row, 'Forefront Content')),
+      authorPosition: toPT(v(row, 'Author Position')),
+      mainTakeaways: toPT(v(row, 'Main Takeaways')),
+      qa: toPT(v(row, "Forefront Q&A's")),
+      categories: refs('blogCategories', v(row, 'Category'), row.Slug),
+      university:
+        v(row, 'University Image') || v(row, 'University Logo') || v(row, 'University Description')
+          ? {
+              image: image(v(row, 'University Image')),
+              logo: image(v(row, 'University Logo')),
+              highlightsTitle: v(row, 'University Highlights Title'),
+              location: v(row, 'University Location'),
+              description: v(row, 'University Description'),
+            }
+          : undefined,
+      legacyUrl: `/blog/${row.Slug}`,
     }
   },
 }
 
-// Orden: primero taxonomías/autores (para las referencias), luego el resto
-const ORDER = ['blogCategories', 'practiceAreaCategories', 'authors', 'practiceAreas', 'services', 'caseStudies', 'posts']
-const stats = []
-for (const k of ORDER) {
-  if (!data[k]) continue
-  let n = 0
-  for (const row of data[k].rows) {
-    if (bool(pick(row, 'Archived'))) continue
-    const d = M[k](row)
-    d.webflow = meta(k, row)
-    docs.push(d)
-    n++
+// Highlights cuyo slug coincide con un área de práctica (p.ej. "financial-management")
+const practiceAreaGuess = (s) => ({'admissions-enrollment-management': 'admission-enrollment-management', 'administrative-instructional-technology': 'administrative-instructionaltechnology'})[s] || s
+const createdCaseStubs = new Set()
+
+// Autores del blog: "Author Name" es texto en Webflow → persona (reutiliza equipo/seed por nombre)
+const authorFor = (name, row) => {
+  const n = (name || 'Doctums Team').replace(/\s+/g, ' ').trim()
+  const fromTeam = [...docs.values()].find((d) => d._type === 'person' && d.name?.toLowerCase() === n.toLowerCase())
+  const id = fromTeam?._id.replace(/^drafts\./, '') || resolveId('person', {name: n}, `person-${slugify(n)}`)
+  const existing = docs.get(id) || docs.get(`drafts.${id}`) || fromTeam
+  // headshot/LinkedIn solo aplican si el post nombra al autor
+  const photo = name ? image(v(row, 'Author Headshot'), n) : undefined
+  const linkedin = name ? v(row, 'Author LinkedIn') : undefined
+  if (existing) {
+    if (!existing.photo && photo) existing.photo = photo
+    if (!existing.linkedin && linkedin) existing.linkedin = linkedin
+  } else {
+    docs.set(id, {_id: id, _type: 'person', name: n, slug: slug(slugify(n)), photo, linkedin, isOrganization: /doctums/i.test(n)})
   }
-  stats.push({k, file: data[k].file, n, cols: Object.keys(data[k].rows[0] || {})})
+  return id
 }
 
-// post.authorName no existe en el esquema: si quedó texto plano, crear persona al vuelo
-for (const d of docs.filter((x) => x._type === 'post' && x.authorName)) {
-  const names = d.authorName.split(/;| with | & /).map((s) => s.trim()).filter(Boolean)
-  d.authors = names.map((name) => {
-    const id = seedIndex.get(`person:name:${name.toLowerCase()}`) || `wf-author-${name.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, '-')}`
-    if (!id.startsWith('person-') && !docs.find((x) => x._id === id)) docs.push({_id: id, _type: 'person', name, isOrganization: /doctums/i.test(name)})
-    return {_type: 'reference', _ref: id, _key: randomKey(12)}
-  })
-  delete d.authorName
+// ---------------------------------------------------------------------------
+// Ejecutar (orden: taxonomías y personas primero)
+// ---------------------------------------------------------------------------
+const ORDER = ['blogCategories', 'practiceAreaCategories', 'practiceAreas', 'teamMembers', 'advisoryServices', 'ellucianServices', 'solutions', 'caseStudies', 'caseStudyHighlights', 'posts']
+const stats = []
+for (const coll of ORDER) {
+  if (!data[coll]) continue
+  data[coll].rows.forEach((row, i) => push(coll, row, M[coll](row, i)))
+  stats.push({coll, file: data[coll].file, n: data[coll].rows.length, drafts: data[coll].rows.filter((r) => bool(r.Draft)).length, cols: Object.keys(data[coll].rows[0] || {})})
 }
 
-// Quitar undefined y escribir
+// Un borrador sin versión publicada que es referenciado fuertemente rompería el import → referencias débiles ya aplicadas.
+const strip = (o) => JSON.parse(JSON.stringify(o))
 mkdirSync('seed', {recursive: true})
-const clean = (o) => JSON.parse(JSON.stringify(o))
-writeFileSync(OUT, docs.map((d) => JSON.stringify(clean(d))).join('\n') + '\n')
+const all = [...docs.values()].map(strip)
+writeFileSync(OUT, all.map((d) => JSON.stringify(d)).join('\n') + '\n')
 
+// ---------------------------------------------------------------------------
 // Reporte
-const lines = ['# Reporte de importación Webflow → Sanity', '', `Generado: ${new Date().toISOString()}`, '']
-lines.push('| Colección | Archivo | Documentos |', '|---|---|---|')
-stats.forEach((s) => lines.push(`| ${s.k} | ${s.file} | ${s.n} |`))
-lines.push('', `**Total:** ${docs.length} documentos → \`${OUT}\``, '')
-for (const s of stats) {
-  const used = usedCols.get(s.k) || new Set()
-  const unmapped = s.cols.filter((c) => !used.has(c) && !SYSTEM_COLS.includes(c))
-  if (unmapped.length) lines.push(`### Columnas sin mapear en ${s.k}`, '', 'Se guardan en `webflow.raw` de cada documento:', '', ...unmapped.map((c) => `- ${c}`), '')
-}
-if (unknown.length) {
-  lines.push('### CSV no reconocidos (no importados)', '')
-  unknown.forEach((u) => lines.push(`- **${u.file}** (${u.rows} filas): ${u.columns.join(', ')}`))
-  lines.push('')
-}
-if (missingRefs.length) lines.push('### Referencias no encontradas', '', ...[...new Set(missingRefs)].map((r) => `- ${r}`), '')
-writeFileSync(REPORT, lines.join('\n'))
+// ---------------------------------------------------------------------------
+const byType = {}
+all.forEach((d) => (byType[d._type] = (byType[d._type] || 0) + 1))
+const images = all.map((d) => JSON.stringify(d).match(/"_sanityAsset":"image@[^"]+"/g) || []).flat()
+const L = ['# Reporte de importación Webflow → Sanity', '', `Generado: ${new Date().toISOString()}`, '', '## Colecciones', '', '| Colección | Archivo | Ítems | Borradores |', '|---|---|---|---|']
+stats.forEach((s) => L.push(`| ${s.coll} | ${s.file} | ${s.n} | ${s.drafts} |`))
+L.push('', '## Documentos generados', '', '| Tipo | Cantidad |', '|---|---|', ...Object.entries(byType).map(([t, n]) => `| ${t} | ${n} |`))
+L.push('', `**Total:** ${all.length} documentos · ${images.length} imágenes (${new Set(images).size} únicas) → \`${OUT}\``, '')
+if (createdCaseStubs.size)
+  L.push('## Casos de estudio creados como base', '', 'La colección **Case Studies** no venía en la exportación. Se crearon estos casos (solo nombre y slug) para mantener la relación con sus highlights:', '', ...[...createdCaseStubs].map((s) => `- \`${s}\``), '')
+const missingColl = Object.keys(COLLECTIONS).filter((c) => !data[c])
+if (missingColl.length) L.push('## Colecciones no incluidas en la exportación', '', ...missingColl.map((c) => `- ${c}`), '')
+if (unknown.length) L.push('## CSV no reconocidos (no importados)', '', ...unknown.map((u) => `- **${u.file}** (${u.rows} filas): ${u.columns.join(', ')}`), '')
+if (missingRefs.length) L.push('## Referencias no encontradas', '', ...[...new Set(missingRefs)].map((r) => `- ${r}`), '')
+writeFileSync(REPORT, L.join('\n'))
 
-console.log(stats.map((s) => `✔ ${s.k.padEnd(24)} ${String(s.n).padStart(4)}  (${s.file})`).join('\n'))
-if (unknown.length) console.log(`⚠ ${unknown.length} CSV no reconocidos — ver ${REPORT}`)
-if (missingRefs.length) console.log(`⚠ ${missingRefs.length} referencias no encontradas — ver ${REPORT}`)
-console.log(`→ ${docs.length} documentos en ${OUT}\n→ Siguiente paso: npm run import:webflow`)
+console.log(stats.map((s) => `✔ ${s.coll.padEnd(22)} ${String(s.n).padStart(4)}${s.drafts ? ` (${s.drafts} borrador/es)` : ''}`).join('\n'))
+console.log(`→ ${all.length} documentos, ${new Set(images).size} imágenes únicas → ${OUT}`)
+if (missingRefs.length) console.log(`⚠ ${new Set(missingRefs).size} referencias no encontradas — ver ${REPORT}`)
+if (createdCaseStubs.size) console.log(`⚠ ${createdCaseStubs.size} casos de estudio creados como base (falta CSV "Case Studies")`)
