@@ -223,11 +223,17 @@ const plan = {
   caseStudyHighlights: (r) => ['caseStudyHighlight', `highlight-${r.Slug}`],
   posts: (r) => ['post', resolveId('post', {slug: r.Slug}, `post-${r.Slug}`)],
 }
+// Sanity: IDs de máx. 128 caracteres ([a-zA-Z0-9._-]); con "drafts." delante → límite seguro 115.
+// Si el id legible es muy largo, se usa <prefijo>-<Item ID de Webflow>.
+const safeId = (id, row) => {
+  const clean = id.replace(/[^a-zA-Z0-9._-]/g, '-')
+  return clean.length <= 115 ? clean : `${clean.split('-')[0]}-wf${row['Item ID']}`
+}
 const ids = {}
 for (const [coll, {rows}] of Object.entries(data)) {
   ids[coll] = new Map()
   for (const r of rows) {
-    const [, id] = plan[coll](r)
+    const id = safeId(plan[coll](r)[1], r)
     ids[coll].set(r['Item ID'], id)
     register(coll, r.Slug, bool(r.Draft) ? `drafts.${id}` : id, bool(r.Draft))
   }
@@ -382,7 +388,7 @@ const M = {
     const caseSlug = v(row, 'Case Study')
     if (caseSlug && !refIndex.caseStudies?.has(caseSlug)) {
       // Colección "Case Studies" no exportada: crear caso base para no perder la relación
-      const id = resolveId('caseStudy', {slug: caseSlug}, `case-${caseSlug}`)
+      const id = safeId(resolveId('caseStudy', {slug: caseSlug}, `case-${caseSlug}`), {'Item ID': caseSlug.slice(0, 40)})
       register('caseStudies', caseSlug, id, false)
       const pretty = caseSlug.split('---').map((p) => p.split('-').map((w) => (w.length <= 3 && /^(of|the|and)$/.test(w) ? w : w[0].toUpperCase() + w.slice(1))).join(' ')).join(' – ')
       docs.set(id, {_id: id, _type: 'caseStudy', institution: pretty.replace(/^Ollu\b/, 'OLLU').replace(/^Uvm\b/, 'UVM').replace(/^Duoc\b/, 'DUOC'), slug: slug(caseSlug), legacyUrl: `/case-studies/${caseSlug}`})
@@ -456,7 +462,7 @@ const createdCaseStubs = new Set()
 const authorFor = (name, row) => {
   const n = (name || 'Doctums Team').replace(/\s+/g, ' ').trim()
   const fromTeam = [...docs.values()].find((d) => d._type === 'person' && d.name?.toLowerCase() === n.toLowerCase())
-  const id = fromTeam?._id.replace(/^drafts\./, '') || resolveId('person', {name: n}, `person-${slugify(n)}`)
+  const id = fromTeam?._id.replace(/^drafts\./, '') || resolveId('person', {name: n}, `person-${slugify(n)}`.slice(0, 115))
   const existing = docs.get(id) || docs.get(`drafts.${id}`) || fromTeam
   // headshot/LinkedIn solo aplican si el post nombra al autor
   const photo = name ? image(v(row, 'Author Headshot'), n) : undefined

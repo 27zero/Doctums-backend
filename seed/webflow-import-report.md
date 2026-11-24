@@ -1,6 +1,6 @@
 # Reporte de importación Webflow → Sanity
 
-Generado: 2026-11-24T20:32:20.702Z
+Generado: 2026-11-24T20:48:22.672Z
 
 ## Colecciones
 

@@ -15,9 +15,9 @@
     "deploy": "sanity deploy",
     "deploy-graphql": "sanity graphql deploy",
     "typegen": "sanity schema extract && sanity typegen generate",
-    "seed": "sanity dataset import seed/doctums-seed.ndjson production --replace",
+    "seed": "sanity dataset import seed/doctums-seed.ndjson --dataset production --replace",
     "webflow:build": "node scripts/webflow-import.mjs",
-    "webflow:import": "sanity dataset import seed/webflow-import.ndjson production --replace",
+    "webflow:import": "sanity dataset import seed/webflow-import.ndjson --dataset production --replace",
     "migrate": "npm run seed && npm run webflow:build && npm run webflow:import"
   },
   "dependencies": {
