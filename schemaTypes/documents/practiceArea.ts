@@ -19,6 +19,7 @@ export const practiceArea = defineType({
     defineField({name: 'sections', title: 'Secciones', type: 'array', of: pageBuilderMembers, group: 'content'}),
     defineField({name: 'seo', title: 'SEO', type: 'seo', group: 'seo'}),
     legacyUrlField,
+    defineField({name: 'webflow', title: 'Webflow (migración)', type: 'webflowMeta', hidden: ({value}) => !value}),
   ],
   preview: {select: {title: 'title', subtitle: 'category.title'}},
 })

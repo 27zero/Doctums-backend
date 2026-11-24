@@ -28,6 +28,24 @@ node scripts/build-seed.mjs   # regenera seed/doctums-seed.ndjson (opcional)
 npm run seed                  # sanity dataset import ... production --replace
 ```
 
+## Migración del CMS de Webflow
+
+El script `scripts/webflow-import.mjs` convierte los CSV exportados del CMS de Webflow en documentos de Sanity:
+
+- **Rich text → Portable Text**: títulos, listas, enlaces, imágenes con alt y pie, videos y embeds.
+- **Imágenes**: se descargan del CDN de Webflow y se suben a Sanity al importar.
+- **Referencias**: autor y categorías del blog, categoría de cada área de práctica.
+- **IDs deterministas**: si el slug o el nombre coincide con el seed base, reutiliza ese `_id`, así las páginas siguen apuntando bien. Si no, usa `wf-<ItemID>`. Se puede re-ejecutar sin duplicar.
+- **Trazabilidad**: cada documento guarda en `webflow` el Item ID, las fechas, el estado y las columnas que no se mapearon (en JSON), para no perder nada.
+- **Reporte**: `seed/webflow-import-report.md` lista las columnas sin mapear, los CSV no reconocidos y las referencias rotas.
+
+```bash
+# 1. Exporta cada colección desde Webflow (CMS → Export) a ./webflow-export/
+npm run seed            # contenido base (páginas, navegación, footer…)
+npm run webflow:build   # CSV → seed/webflow-import.ndjson + reporte
+npm run webflow:import  # sube a Sanity (con --replace)
+```
+
 ## Publicar el Studio
 
 ```bash

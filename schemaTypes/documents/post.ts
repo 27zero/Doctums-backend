@@ -22,6 +22,7 @@ export const post = defineType({
     defineField({name: 'related', title: 'Artículos relacionados', type: 'array', of: [{type: 'reference', to: [{type: 'post'}]}], validation: (r) => r.max(3), group: 'content'}),
     defineField({name: 'seo', title: 'SEO', type: 'seo', group: 'seo'}),
     legacyUrlField,
+    defineField({name: 'webflow', title: 'Webflow (migración)', type: 'webflowMeta', hidden: ({value}) => !value}),
   ],
   orderings: [{title: 'Más recientes', name: 'publishedDesc', by: [{field: 'publishedAt', direction: 'desc'}]}],
   preview: {

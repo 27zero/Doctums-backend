@@ -14,5 +14,6 @@ export const practiceAreaCategory = defineType({
     defineField({name: 'description', title: 'Descripción', type: 'text', rows: 3}),
     defineField({name: 'icon', title: 'Ícono', type: 'image'}),
     defineField({name: 'orderRank', title: 'Orden', type: 'number'}),
+    defineField({name: 'webflow', title: 'Webflow (migración)', type: 'webflowMeta', hidden: ({value}) => !value}),
   ],
 })

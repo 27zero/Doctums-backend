@@ -19,6 +19,7 @@ export const person = defineType({
     defineField({name: 'isTeamMember', title: 'Mostrar en /team', type: 'boolean', initialValue: false}),
     defineField({name: 'isOrganization', title: 'Es autor institucional (Doctums Team)', type: 'boolean', initialValue: false}),
     defineField({name: 'orderRank', title: 'Orden en el equipo', type: 'number'}),
+    defineField({name: 'webflow', title: 'Webflow (migración)', type: 'webflowMeta', hidden: ({value}) => !value}),
   ],
   orderings: [{title: 'Orden', name: 'order', by: [{field: 'orderRank', direction: 'asc'}]}],
   preview: {select: {title: 'name', subtitle: 'role', media: 'photo'}},

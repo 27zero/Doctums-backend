@@ -15,12 +15,18 @@
     "deploy": "sanity deploy",
     "deploy-graphql": "sanity graphql deploy",
     "typegen": "sanity schema extract && sanity typegen generate",
-    "seed": "sanity dataset import seed/doctums-seed.ndjson production --replace"
+    "seed": "sanity dataset import seed/doctums-seed.ndjson production --replace",
+    "webflow:build": "node scripts/webflow-import.mjs",
+    "webflow:import": "sanity dataset import seed/webflow-import.ndjson production --replace",
+    "migrate": "npm run seed && npm run webflow:build && npm run webflow:import"
   },
   "dependencies": {
+    "@portabletext/block-tools": "^6.0.8",
     "@sanity/document-internationalization": "^6.3.1",
     "@sanity/icons": "^5.4.0",
     "@sanity/vision": "^6.25.0",
+    "csv-parse": "^7.0.3",
+    "jsdom": "^31.0.1",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "sanity": "^6.25.0",

@@ -35,6 +35,7 @@ export const servicePage = defineType({
     defineField({name: 'orderRank', title: 'Orden', type: 'number', group: 'content'}),
     defineField({name: 'seo', title: 'SEO', type: 'seo', group: 'seo'}),
     legacyUrlField,
+    defineField({name: 'webflow', title: 'Webflow (migración)', type: 'webflowMeta', hidden: ({value}) => !value}),
   ],
   orderings: [{title: 'Orden', name: 'order', by: [{field: 'orderRank', direction: 'asc'}]}],
   preview: {

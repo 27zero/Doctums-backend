@@ -13,6 +13,7 @@ export const blogCategory = defineType({
     slugField(),
     defineField({name: 'description', title: 'Descripción', type: 'text', rows: 3}),
     defineField({name: 'orderRank', title: 'Orden', type: 'number'}),
+    defineField({name: 'webflow', title: 'Webflow (migración)', type: 'webflowMeta', hidden: ({value}) => !value}),
   ],
   orderings: [{title: 'Orden', name: 'order', by: [{field: 'orderRank', direction: 'asc'}]}],
 })

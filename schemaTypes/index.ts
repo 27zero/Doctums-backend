@@ -10,6 +10,7 @@ import {linkGroup} from './objects/linkGroup'
 import {navItem} from './objects/navItem'
 import {socialLink} from './objects/socialLink'
 import {faqItem} from './objects/faqItem'
+import {webflowMeta} from './objects/webflowMeta'
 // Sections (page builder)
 import {sections} from './sections'
 // Documents
@@ -31,7 +32,7 @@ import {redirect} from './documents/redirect'
 
 export const schemaTypes = [
   // objects
-  link, cta, seo, imageWithAlt, blockContent, stat, card, linkGroup, navItem, socialLink, faqItem,
+  link, cta, seo, imageWithAlt, blockContent, stat, card, linkGroup, navItem, socialLink, faqItem, webflowMeta,
   // sections
   ...sections,
   // documents
