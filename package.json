@@ -1,0 +1,35 @@
+{
+  "name": "sanity-doctums",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Sanity Studio para la migración de doctums.com",
+  "main": "package.json",
+  "keywords": [
+    "sanity",
+    "doctums"
+  ],
+  "scripts": {
+    "dev": "sanity dev",
+    "start": "sanity start",
+    "build": "sanity build",
+    "deploy": "sanity deploy",
+    "deploy-graphql": "sanity graphql deploy",
+    "typegen": "sanity schema extract && sanity typegen generate",
+    "seed": "sanity dataset import seed/doctums-seed.ndjson production --replace"
+  },
+  "dependencies": {
+    "@sanity/document-internationalization": "^6.3.1",
+    "@sanity/icons": "^5.4.0",
+    "@sanity/vision": "^6.25.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "sanity": "^6.25.0",
+    "sanity-plugin-internationalized-array": "^5.3.10",
+    "styled-components": "^6.6.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "@types/react": "^19.3.0",
+    "typescript": "^7.0.2"
+  }
+}
